@@ -7,6 +7,8 @@ from .BiSeNet import *
 from .OCNet import *
 MODEL_ZOO = {
     'UNet': UNet,
+    'WGCBA_Net': WGCBA_Net,
+    'WGCBA-Net': WGCBA_Net,
     'UNetRepLKBlock_Conv':UNetRepLKBlock_Conv,
     'UNetFastKAN':UNetFastKAN,
     'UNet_MobileNet': UNet_MobileNet,

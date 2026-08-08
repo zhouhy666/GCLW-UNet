@@ -10,7 +10,7 @@ from tqdm import tqdm
 from dataloaders import make_data_loader
 from utils.metrics import Evaluator
 from utils.dice_score import dice_coeff, multiclass_dice_coeff
-from unet.model_zoo import MODEL_ZOO  # 确保这个文件包含所有模型类
+from models.model_zoo import MODEL_ZOO  # 确保这个文件包含所有模型类
 
 
 @torch.inference_mode()

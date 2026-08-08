@@ -46,6 +46,72 @@ class UNet(nn.Module):
         self.outc = torch.utils.checkpoint(self.outc)
 
 
+class WGCBA_Net(nn.Module):
+    """Wavelet-Guided Global Context and Boundary-Aware U-Net.
+
+    WACM is applied to all four encoder features before skip connections,
+    while GCASPPM performs multi-scale context aggregation at the bottleneck.
+    Boundary-Constrained Dice loss is selected at training time with
+    ``--loss-type dice_ce_boundary``.
+    """
+
+    def __init__(self, n_channels, n_classes, bilinear=True):
+        super().__init__()
+        self.model_name = "WGCBA-Net"
+        self.n_channels = n_channels
+        self.n_classes = n_classes
+        self.bilinear = bilinear
+
+        factor = 2 if bilinear else 1
+        self.inc = DoubleConv(n_channels, 64)
+        self.down1 = Down(64, 128)
+        self.down2 = Down(128, 256)
+        self.down3 = Down(256, 512)
+        self.down4 = Down(512, 1024 // factor)
+
+        self.wacm1 = WACM(64)
+        self.wacm2 = WACM(128)
+        self.wacm3 = WACM(256)
+        self.wacm4 = WACM(512)
+        self.gcasppm = GCASPPM(1024 // factor, 1024 // factor)
+
+        self.up1 = Up(1024, 512 // factor, bilinear)
+        self.up2 = Up(512, 256 // factor, bilinear)
+        self.up3 = Up(256, 128 // factor, bilinear)
+        self.up4 = Up(128, 64, bilinear)
+        self.outc = OutConv(64, n_classes)
+
+    def forward(self, x):
+        x1 = self.wacm1(self.inc(x))
+        x2 = self.wacm2(self.down1(x1))
+        x3 = self.wacm3(self.down2(x2))
+        x4 = self.wacm4(self.down3(x3))
+        x5 = self.gcasppm(self.down4(x4))
+
+        x = self.up1(x5, x4)
+        x = self.up2(x, x3)
+        x = self.up3(x, x2)
+        x = self.up4(x, x1)
+        return self.outc(x)
+
+    def use_checkpointing(self):
+        self.inc = torch.utils.checkpoint(self.inc)
+        self.down1 = torch.utils.checkpoint(self.down1)
+        self.down2 = torch.utils.checkpoint(self.down2)
+        self.down3 = torch.utils.checkpoint(self.down3)
+        self.down4 = torch.utils.checkpoint(self.down4)
+        self.wacm1 = torch.utils.checkpoint(self.wacm1)
+        self.wacm2 = torch.utils.checkpoint(self.wacm2)
+        self.wacm3 = torch.utils.checkpoint(self.wacm3)
+        self.wacm4 = torch.utils.checkpoint(self.wacm4)
+        self.gcasppm = torch.utils.checkpoint(self.gcasppm)
+        self.up1 = torch.utils.checkpoint(self.up1)
+        self.up2 = torch.utils.checkpoint(self.up2)
+        self.up3 = torch.utils.checkpoint(self.up3)
+        self.up4 = torch.utils.checkpoint(self.up4)
+        self.outc = torch.utils.checkpoint(self.outc)
+
+
 
 ######################### 基线模型 结束 #########################
 
@@ -2087,6 +2153,5 @@ class ResUNet(nn.Module):
         self.outc = torch.utils.checkpoint.checkpoint(self.outc)
 
 ######################### ResUNet 结束 ###################
-
 
 

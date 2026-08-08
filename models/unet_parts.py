@@ -80,6 +80,160 @@ class OutConv(nn.Module):
         return self.conv(x)
 
 
+class _ConvBNReLU(nn.Sequential):
+    """A small Conv-BN-ReLU block used by WGCBA-Net."""
+
+    def __init__(self, in_channels, out_channels, kernel_size=3,
+                 dilation=1):
+        padding = dilation * (kernel_size - 1) // 2
+        super().__init__(
+            nn.Conv2d(
+                in_channels,
+                out_channels,
+                kernel_size=kernel_size,
+                padding=padding,
+                dilation=dilation,
+                bias=False,
+            ),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+        )
+
+
+class WACM(nn.Module):
+    """Wavelet-guided Adaptive Convolution Module from WGCBA-Net.
+
+    The module follows the paper's sequential channel/spatial recalibration:
+    Haar LL/LH/HL/HH descriptors are injected into the channel and spatial
+    attention branches, while learnable alpha and beta control the two
+    residual enhancement strengths.
+    """
+
+    def __init__(self, channels, reduction=16):
+        super().__init__()
+        hidden_channels = max(channels // reduction, 1)
+
+        # Fixed, orthonormal 2-D Haar filters. The four responses are grouped
+        # per input channel and reshaped back to [B, C, 4, H/2, W/2].
+        haar_filters = torch.tensor(
+            [
+                [[1.0, 1.0], [1.0, 1.0]],
+                [[-1.0, -1.0], [1.0, 1.0]],
+                [[-1.0, 1.0], [-1.0, 1.0]],
+                [[1.0, -1.0], [-1.0, 1.0]],
+            ],
+            dtype=torch.float32,
+        ).unsqueeze(1) / 2.0
+        self.register_buffer("haar_filters", haar_filters)
+
+        # psi_l and psi_h in the paper align wavelet maps with spatial
+        # attention descriptors. The channel projection keeps the high-
+        # frequency descriptor at C channels for the shared MLP.
+        self.low_spatial_projection = nn.Conv2d(channels, 1, 1, bias=False)
+        self.high_channel_projection = nn.Conv2d(channels * 3, channels, 1,
+                                                  bias=False)
+        self.high_spatial_projection = nn.Conv2d(channels * 3, 1, 1,
+                                                 bias=False)
+
+        self.channel_mlp = nn.Sequential(
+            nn.Linear(channels * 4, hidden_channels, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_channels, channels, bias=False),
+        )
+        self.spatial_attention = nn.Conv2d(4, 1, kernel_size=7, padding=3,
+                                           bias=False)
+
+        # The sigmoid makes the modulation factors stable at initialization
+        # and matches equations (13) and (17) in the paper.
+        self.alpha = nn.Parameter(torch.zeros(1))
+        self.beta = nn.Parameter(torch.zeros(1))
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+
+    def _haar_decompose(self, x):
+        batch, channels, height, width = x.shape
+        pad_h, pad_w = height % 2, width % 2
+        if pad_h or pad_w:
+            x = F.pad(x, (0, pad_w, 0, pad_h), mode="replicate")
+
+        filters = self.haar_filters.to(device=x.device, dtype=x.dtype)
+        filters = filters.repeat(channels, 1, 1, 1)
+        bands = F.conv2d(x, filters, stride=2, groups=channels)
+        bands = bands.view(batch, channels, 4, bands.size(-2), bands.size(-1))
+        return bands.unbind(dim=2)
+
+    def forward(self, x):
+        ll, lh, hl, hh = self._haar_decompose(x)
+        high = torch.cat([lh, hl, hh], dim=1)
+
+        # Equation (11): [GAP(F); GMP(F); GAP(F_LL); GAP(F_H)].
+        channel_descriptor = torch.cat(
+            [
+                self.avg_pool(x),
+                F.adaptive_max_pool2d(x, 1),
+                self.avg_pool(ll),
+                self.avg_pool(self.high_channel_projection(high)),
+            ],
+            dim=1,
+        ).flatten(1)
+        channel_map = torch.sigmoid(self.channel_mlp(channel_descriptor))
+        channel_map = channel_map.unsqueeze(-1).unsqueeze(-1)
+        channel_enhanced = channel_map * x
+        f1 = x + torch.sigmoid(self.alpha) * channel_enhanced
+
+        # Equation (14): spatial descriptors plus projected LL and high bands.
+        target_size = f1.shape[-2:]
+        low_map = self.low_spatial_projection(ll)
+        high_map = self.high_spatial_projection(high)
+        low_map = F.interpolate(low_map, size=target_size, mode="bilinear",
+                                align_corners=False)
+        high_map = F.interpolate(high_map, size=target_size, mode="bilinear",
+                                 align_corners=False)
+        spatial_descriptor = torch.cat(
+            [
+                torch.mean(f1, dim=1, keepdim=True),
+                torch.amax(f1, dim=1, keepdim=True),
+                low_map,
+                high_map,
+            ],
+            dim=1,
+        )
+        spatial_map = torch.sigmoid(self.spatial_attention(spatial_descriptor))
+        spatial_enhanced = spatial_map * f1
+        return f1 + torch.sigmoid(self.beta) * spatial_enhanced
+
+
+class GCASPPM(nn.Module):
+    """Global Context Atrous Spatial Pyramid Pooling Module."""
+
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.projection = _ConvBNReLU(in_channels, out_channels, 1)
+        self.atrous6 = _ConvBNReLU(out_channels, out_channels, 3, dilation=6)
+        self.atrous12 = _ConvBNReLU(out_channels, out_channels, 3, dilation=12)
+        self.atrous18 = _ConvBNReLU(out_channels, out_channels, 3, dilation=18)
+        self.global_context = _ConvBNReLU(out_channels, out_channels, 1)
+        self.fusion = _ConvBNReLU(out_channels * 4, out_channels, 1)
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
+
+    def forward(self, x):
+        projected = self.projection(x)
+        global_feature = self.global_pool(projected)
+        global_feature = self.global_context(global_feature)
+        global_feature = F.interpolate(
+            global_feature,
+            size=projected.shape[-2:],
+            mode="bilinear",
+            align_corners=False,
+        )
+
+        branch6 = self.atrous6(projected) + global_feature
+        branch12 = self.atrous12(projected) + global_feature
+        branch18 = self.atrous18(projected) + global_feature
+        return self.fusion(torch.cat(
+            [projected, branch6, branch12, branch18], dim=1
+        ))
+
+
 ######################### NAMAttention加到卷积层 开始 ###############################
 
 
@@ -1272,4 +1426,4 @@ class Down_ADown_RepLKBlockConv(nn.Module):
         except Exception as e:
             raise
 
-######################### ADown加到RepLKBlockConv 结束 ##################  
+######################### ADown加到RepLKBlockConv 结束 ##################

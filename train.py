@@ -8,13 +8,13 @@ import datetime
 
 from mypath import Path
 from dataloaders import make_data_loader
-from unet.unet_model import *
-from unet.UNetpp import *
-from unet.deeplabv3 import *
-from unet.SegNet import *
-from unet.PSPNet import *
-from unet.BiSeNet import *
-from unet.OCNet import *
+from models.unet_model import *
+from models.UNetpp import *
+from models.deeplabv3 import *
+from models.SegNet import *
+from models.PSPNet import *
+from models.BiSeNet import *
+from models.OCNet import *
 from utils.loss import SegmentationLosses
 from utils.calculate_weights import calculate_weigths_labels
 from utils.lr_scheduler import LR_Scheduler

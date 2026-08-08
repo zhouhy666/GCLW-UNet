@@ -1,7 +1,8 @@
-# CLAUDE.md
+# WGCBA-Net
 ## Project Overview
-This code is directly related to the manuscript  currently submitting to The Visual Computer
-We propose a global context and boundary-aware semantic segmentation framework tailored for industrial steel surfaces. This method integrates a Global Context Atrous Spatial Pyramid Pooling module for multi-scale feature aggregation, a lightweight adaptive attention mechanism for feature enhancement, and a boundary-constrained Dice loss function to optimize defect contours. Experiments on the NEU-SEG and SSDD datasets demonstrate that the model achieves an mIoU of 81.5% and an mAP of 91.3%, outperforming mainstream segmentation networks. The proposed approach significantly improves the localization accuracy and boundary segmentation performance for low-contrast and multi-scale defects in practical industrial scenarios.
+WGCBA-Net is a wavelet-guided global-context and boundary-aware semantic segmentation network for industrial steel surface defects. It follows a U-Net encoder-decoder design and combines three paper-defined components: GC-ASPPM for multi-scale context aggregation, WACM for Haar-wavelet-guided channel/spatial recalibration, and Boundary-Constrained Dice (BCD) loss for contour-sensitive supervision. The paper reports 81.5% mIoU and 91.3% mAP on the NEU-seg benchmark.
+
+Repository: https://github.com/zhouhy666/WGCBA-Net
 
 ## Core Commands
 ### Environment configuration
@@ -14,19 +15,19 @@ SSDD（Severstal Steel Defect Detection）:https://www.kaggle.com/c/severstal-st
 ### Training the Model
 ```bash
 # Single model training
-python train.py --dataset pascal --model_type UNet --batch_size 8 --epochs 100
+python train.py --dataset pascal --model_type WGCBA_Net --batch-size 8 --loss-type dice_ce_boundary --epochs 100
 
 # Specify GPUs
-python train.py --dataset pascal --model_type UNet --gpu-ids 0,1
+python train.py --dataset pascal --model_type WGCBA_Net --gpu-ids 0,1
 
 # Resume training from checkpoint
 python train.py --dataset pascal --model_type UNet --resume /path/to/checkpoint.pth.tar
 
 # Validate the model
-python val.py --model_type UNet --resume /path/to/model_best.pth.tar
+python val.py --model_type WGCBA_Net --resume /path/to/model_best.pth.tar
 
 # Inference / Prediction
-python predict.py --model_type UNet --resume /path/to/model_best.pth.tar
+python predict.py --model_type WGCBA_Net --resume /path/to/model_best.pth.tar
 
 ##Environment Verification
 ```bash
@@ -36,11 +37,11 @@ python env_test.py
 ## Architecture Overview
 ### Directory Structure
 ```
-GCLW-UNet/
+WGCBA-Net/
 ├── blocks/              # Pluggable modules (Attention, Convolution improvements, etc.)
 ├── models/              # Model definitions
 │   ├── unet_model.py    # Main model file (contains all improved models)
-│   ├── unet_parts.py    # Basic components (DoubleConv, Down, Up, OutConv)
+│   ├── unet_parts.py    # U-Net blocks plus WACM and GC-ASPPM
 │   └── model_zoo.py     # Model registry
 ├── dataloaders/         # Data loading
 ├── utils/               # Utilities (loss, metrics, saver)
@@ -50,16 +51,17 @@ GCLW-UNet/
 ```
 
 ### Module Call Chain
-1.blocks/: Contains independent modules (CBAM,LW-CBAM, ASPP,GC-ASPPM, etc.), dynamically imported via blocks/__init__.py.
-2.unet/unet_model.py: Defines all UNet variant models, directly using modules via from blocks import *.
-3.unet/model_zoo.py: Unified registry MODEL_ZOO, retrieves model classes by string name.
-4.train.py: Uses the --model_type argument to fetch the model class from globals() or MODEL_ZOO.
+1.blocks/: Contains reusable attention and convolution modules.
+2.models/unet_model.py: Defines all UNet variant models, directly using modules via from blocks import *.
+3.models/model_zoo.py: Unified registry MODEL_ZOO, retrieves model classes by string name.
+4.models/unet_parts.py: Implements the paper-aligned WACM and GC-ASPPM modules.
+5.train.py: Uses the --model_type argument to fetch the model class from globals() or MODEL_ZOO.
 
 ### Model Registration Process
 Three-step workflow to add a new model:
 1.Create a new module under blocks/ (optional).
-2.Define the model class in unet/unet_model.py.
-3.Register it in the MODEL_ZOO dictionary within unet/model_zoo.py.
+2.Define the model class in models/unet_model.py.
+3.Register it in the MODEL_ZOO dictionary within models/model_zoo.py.
 
 ### Data Flow
 ```
@@ -86,6 +88,7 @@ train.py → Trainer class
   - CrossEntropy (Default)
   - Focal Loss
   - Dice Loss
+  - Boundary-Constrained Dice (`dice_ce_boundary`, weights 0.4/0.4/0.2)
 
 ### Learning Rate Scheduler
 - poly (Default)
@@ -93,6 +96,7 @@ train.py → Trainer class
 - cos (Cosine annealing)
 
 ## Supported Models
-- Check the MODEL_ZOO dictionary in unet/model_zoo.py, which includes:
+- Check the MODEL_ZOO dictionary in models/model_zoo.py, which includes:
+- `WGCBA_Net` (paper-aligned WGCBA-Net)
 - UNet baseline and variants
 - Comparison models (UNetPP, DeepLabV3Plus, SegNet, PSPNet, BiSeNet, OCNet, etc.)
